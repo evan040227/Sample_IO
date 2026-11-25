@@ -11,6 +11,24 @@ sheets = []
 valid = False
 employment_coeff = None
 
+# 한국은행 2023년 산업연관표 통계표(별첨) 19번의 2023년 취업유발계수.
+# 단위: 명/10억원. 공식 표는 380개 기본부문이 아닌 통합부문 기준이므로
+# AI 대리산업을 해당 통합부문에 대응시켜 시나리오 수준에서 추정합니다.
+AI_EMPLOYMENT_COEFFICIENTS = {
+    "semiconductor": {
+        "official_sector": "컴퓨터, 전자 및 광학기기",
+        "coefficient": 3.622212780454136
+    },
+    "software": {
+        "official_sector": "정보통신 및 방송 서비스",
+        "coefficient": 7.331367406255125
+    },
+    "datacenter": {
+        "official_sector": "정보통신 및 방송 서비스",
+        "coefficient": 7.331367406255125
+    }
+}
+
 # 산업연관표에는 AI 전용 산업이 별도로 분리되어 있지 않아 관련 산업을 대리변수로 사용합니다.
 AI_GROUPS = {
     "semiconductor": {"label": "AI 반도체(집적회로 대리)", "codes": ["3102"]},
@@ -192,16 +210,27 @@ def ai_analyze(payload):
                       "codes": [{"code": c, "name": names[codes.index(c)]} for c in available],
                       "demand": amount, "production": float(gx.sum()),
                       "imports": float(gm.sum()), "valueAdded": float(gv.sum())}
-        if ge is not None:
-            group_item["employment"] = float(ge.sum())
         group_results.append(group_item)
 
     if total <= 0:
         raise ValueError("AI 산업군 중 하나 이상에 양의 수요 증가액을 입력하세요.")
     x, m, v, e, rows = _make_rows(f_total)
+    employment_total = 0.0
+    for group_item in group_results:
+        coefficient_info = AI_EMPLOYMENT_COEFFICIENTS[group_item["key"]]
+        # 취업유발계수는 최종수요 10억원당 유발되는 취업자 수이므로
+        # 해당 AI 대리산업의 최종수요(백만원)를 1,000으로 나누어 곱합니다.
+        employment = (group_item["demand"] / 1000.0) * coefficient_info["coefficient"]
+        group_item["employment"] = float(employment)
+        group_item["employmentCoefficient"] = float(coefficient_info["coefficient"])
+        group_item["employmentOfficialSector"] = coefficient_info["official_sector"]
+        employment_total += employment
+
     result = {"demand": float(total), "production": float(x.sum()), "imports": float(m.sum()),
               "valueAdded": float(v.sum()), "multiplier": float(x.sum() / total),
-              "groups": group_results, "rows": rows, "employmentAvailable": employment_coeff is not None}
-    if e is not None:
-        result["employment"] = float(e.sum())
+              "groups": group_results, "rows": rows, "employmentAvailable": True,
+              "employment": float(employment_total),
+              "employmentUnit": "명",
+              "employmentCoefficientUnit": "명/10억원",
+              "employmentSource": "한국은행 2023년 산업연관표 통계표(별첨) 19. 부문별 취업유발계수"}
     return emit(result)
