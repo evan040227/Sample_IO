@@ -11,14 +11,14 @@ function options(el,list){el.replaceChildren(...list.map(x=>{const o=document.cr
 function invalidate(){result=null;aiResult=null;$('results').hidden=true;$('ai-results').hidden=true;}
 async function load(buffer){
  invalidate();basket=[];renderBasket();
- for(const id of ['sheet','row','sector','add','run','row-search','col-search','sector-search','amount','ai-run','employment-file'])$(id).disabled=true;
+ for(const id of ['sheet','row','sector','add','run','row-search','col-search','sector-search','amount','ai-run'])$(id).disabled=true;
  if(worker)worker.terminate();for(const p of requests.values())p.reject(Error('데이터 다시 로드'));requests.clear();startWorker();
  try{
   const info=await call('init',buffer);sectors=info.sectors;options($('sector'),sectors);
   $('sector-search').value='';$('row-search').value='';$('col-search').value='';
   $('sheet').replaceChildren(...info.sheets.map(s=>{const o=text('option',s);o.value=s;return o;}));
   $('validation').textContent=JSON.stringify(info.residuals,null,2)+'\n최대 절대 잔차: 허용값 1e-8 미만';
-  for(const id of ['sheet','row','sector','add','run','row-search','col-search','sector-search','amount','ai-run','employment-file'])$(id).disabled=false;
+  for(const id of ['sheet','row','sector','add','run','row-search','col-search','sector-search','amount','ai-run'])$(id).disabled=false;
   await explore();$('status').textContent='준비 완료 · '+sectors.length+'개 부문 · '+info.sheets.length+'개 시트 · 계수 검증 통과';
  }catch(e){$('status').textContent='준비 실패: '+e.message+' — 새로고침 후 재시도하세요.';}
 }
@@ -41,14 +41,13 @@ $('download').onclick=()=>{if(!result)return;downloadCSV('io-2023-results.csv',[
 
 function renderAI(){
  $('ai-results').hidden=false;
- const cards=[['AI 수요 증가액',aiResult.demand,'억원'],['생산유발액',aiResult.production,'억원'],['수입유발액',aiResult.imports,'억원'],['부가가치유발액',aiResult.valueAdded,'억원']];
- if(aiResult.employmentAvailable)cards.push(['취업유발인원',aiResult.employment,'명']);
+ const cards=[['AI 수요 증가액',aiResult.demand,'억원'],['생산유발액',aiResult.production,'억원'],['수입유발액',aiResult.imports,'억원'],['부가가치유발액',aiResult.valueAdded,'억원'],['취업유발인원',aiResult.employment,'명']];
  $('ai-cards').replaceChildren(...cards.map(([label,value,unit])=>{const d=text('div',label);d.className='card';d.append(text('strong',unit==='억원'?fmtWon(value):fmt(value)),text('span',unit));return d;}));
- $('ai-groups').replaceChildren(...aiResult.groups.map(g=>{const tr=document.createElement('tr');[g.label,fmtWon(g.demand),fmtWon(g.production),fmtWon(g.valueAdded),aiResult.employmentAvailable?fmt(g.employment):'계수 자료 필요'].forEach(v=>tr.append(text('td',v)));return tr;}));
+ $('ai-groups').replaceChildren(...aiResult.groups.map(g=>{const tr=document.createElement('tr');[g.label,g.employmentOfficialSector,fmt(g.employmentCoefficient),fmtWon(g.demand),fmt(g.employment)].forEach(v=>tr.append(text('td',v)));return tr;}));
  const top=aiResult.rows.slice(0,15),max=Math.max(...top.map(r=>r.production),1);
  $('ai-bars').replaceChildren(...top.map(r=>{const d=text('div',r.code+' '+r.name+' · '+fmtWon(r.production)+'억원');d.className='bar';const track=document.createElement('div');track.className='track';const fill=document.createElement('div');fill.className='fill';fill.style.width=Math.max(0,r.production/max*100)+'%';track.append(fill);d.append(track);return d;}));
- $('ai-rows').replaceChildren(...aiResult.rows.map(r=>{const tr=document.createElement('tr');[r.code,r.name,fmtWon(r.production),fmtWon(r.imports),fmtWon(r.valueAdded),aiResult.employmentAvailable?fmt(r.employment):'—'].forEach(v=>tr.append(text('td',v)));return tr;}));
- $('ai-employment-note').textContent=aiResult.employmentAvailable?'취업유발계수가 연결되어 취업유발인원을 계산했습니다.':'취업유발계수 자료가 연결되지 않아 취업유발인원은 계산하지 않았습니다.';
+ $('ai-rows').replaceChildren(...aiResult.rows.map(r=>{const tr=document.createElement('tr');[r.code,r.name,fmtWon(r.production),fmtWon(r.imports),fmtWon(r.valueAdded)].forEach(v=>tr.append(text('td',v)));return tr;}));
+ $('ai-employment-note').textContent='취업유발인원은 한국은행 2023년 취업유발계수(명/10억원)를 AI 대리산업의 최종수요에 적용한 추정치입니다. 공식 계수는 통합부문 기준이므로 380개 기본부문별 취업유발인원으로 세분하지 않습니다.';
 }
 $('ai-run').onclick=async()=>{
  const payload={semiconductor:toBaekman($('ai-semiconductor').value),software:toBaekman($('ai-software').value),datacenter:toBaekman($('ai-datacenter').value)};
@@ -58,23 +57,16 @@ $('ai-run').onclick=async()=>{
  catch(e){$('ai-status').textContent='분석 실패: '+e.message;}
  finally{$('ai-run').disabled=false;}
 };
-$('employment-file').onchange=async()=>{
- const file=$('employment-file').files[0];if(!file)return;
- try{
-  const raw=(await file.text()).replace(/^\uFEFF/,'').trim();
-  const lines=raw.split(/\r?\n/).filter(Boolean);
-  if(lines.length<2)throw Error('CSV에 계수 데이터가 없습니다.');
-  const header=lines[0].split(',').map(s=>s.trim().toLowerCase());
-  const codeIdx=header.indexOf('code'),coeffIdx=header.indexOf('employment_per_1billion_won');
-  if(codeIdx<0||coeffIdx<0)throw Error('헤더는 code,employment_per_1billion_won 이어야 합니다.');
-  const data=lines.slice(1).map(line=>{const cols=line.split(',');const rawValue=(cols[coeffIdx]||'').trim();if(!rawValue)throw Error('취업계수 빈 값이 있습니다. 380개 부문을 모두 채워야 합니다.');const value=Number(rawValue);if(!Number.isFinite(value)||value<0)throw Error('취업계수는 0 이상의 숫자여야 합니다.');return {code:(cols[codeIdx]||'').trim(),coefficient:value};});
-  const info=await call('employment',data);
-  $('employment-status').textContent='취업계수 '+info.count+'개 부문 연결 완료 (명/10억원). AI 분석을 다시 실행하세요.';
- }catch(e){$('employment-status').textContent='취업계수 연결 실패: '+e.message;}
-};
 $('download-ai').onclick=()=>{
  if(!aiResult)return;
- const rows=[['산업코드','산업명','생산유발액_억원','수입유발액_억원','부가가치유발액_억원','취업유발인원'],...aiResult.rows.map(r=>[r.code,r.name,r.production/100,r.imports/100,r.valueAdded/100,r.employment??''])];
+ const rows=[
+  ['구분','산업코드','산업명/공식 통합부문','수요 증가액_억원','생산유발액_억원','수입유발액_억원','부가가치유발액_억원','취업유발계수_명_10억원','취업유발인원_명'],
+  ...aiResult.groups.map(g=>['AI 산업군','',g.label+' / '+g.employmentOfficialSector,g.demand/100,g.production/100,'',g.valueAdded/100,g.employmentCoefficient,g.employment]),
+  ['합계','','AI 산업 전체',aiResult.demand/100,aiResult.production/100,aiResult.imports/100,aiResult.valueAdded/100,'',aiResult.employment],
+  [],
+  ['세부 기본부문 산업별 유발액','','','','','','','',''],
+  ...aiResult.rows.map(r=>['기본부문',r.code,r.name,'',r.production/100,r.imports/100,r.valueAdded/100,'',''])
+ ];
  downloadCSV('ai-industry-impact-2023.csv',rows);
 };
 async function loadDefaultWorkbook(){
